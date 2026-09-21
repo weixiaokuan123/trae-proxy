@@ -37,7 +37,12 @@ export interface SchedulerOptions {
   endHour: number
   /** 每 N ms 由外部触发一次检查时调用；内部也用它做去重 */
   log?: (message: string) => void
+  /** 失败结果两次写盘之间的最小间隔，默认 1 小时，避免未登录时频繁写盘。 */
+  failWriteBackoffMs?: number
 }
+
+/** 连续失败时，结果写盘的最小间隔（默认 1 小时）。 */
+const FAIL_WRITE_BACKOFF_MS = 60 * 60 * 1000
 
 function localDate(d = new Date()): string {
   const y = d.getFullYear()
@@ -96,6 +101,8 @@ export class SigninScheduler {
   private store: SigninStateStore = {}
   private loaded = false
   private readonly inflight = new Set<string>()
+  /** 各目标「失败结果」最近一次写盘时间，用于限制失败时的写盘频率。 */
+  private readonly lastFailWriteMs: Record<string, number> = {}
   private readonly options: SchedulerOptions
 
   constructor(options: SchedulerOptions) {
@@ -158,9 +165,17 @@ export class SigninScheduler {
       this.options.log?.(`签到[${target}] ${outcome.message}`)
       return { ran: true, entry }
     } catch (error) {
+      // 失败时更新内存中的结果，但**不无条件写盘**：
+      // 某区域长期不可用（如从未登录）时，每个 tick 都落盘会造成无意义的硬盘写入。
+      // 仅当「距上次写盘超过 FAIL_WRITE_BACKOFF_MS」时才持久化一次，限制写盘频率。
       entry.result = `失败：${String(error instanceof Error ? error.message : error)}`
       entry.attemptedAtMs = Date.now()
-      await this.save().catch(() => {})
+      const last = this.lastFailWriteMs[target] ?? 0
+      const backoff = this.options.failWriteBackoffMs ?? FAIL_WRITE_BACKOFF_MS
+      if (Date.now() - last >= backoff) {
+        await this.save().catch(() => {})
+        this.lastFailWriteMs[target] = Date.now()
+      }
       this.options.log?.(`签到[${target}] 失败：${String(error instanceof Error ? error.message : error)}`)
       return { ran: true, entry }
     } finally {

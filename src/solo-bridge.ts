@@ -184,7 +184,22 @@ export class TraeSoloBridge implements TraeUpstreamClient {
       // Prefer the persisted catalog's `wireConfigName` when present, then fall
       // back to the startup wire resolver keyed by display name/id; the resolver
       // never depends on a user-refreshed or re-saved directory.
-      const entry = this.catalog?.current().find(item => item.id === model)
+      //
+      // Matching is case-insensitive because Trae's config_name is
+      // case-sensitive on the wire: a request for `deepseek-v4-flash` (all
+      // lowercase, as some OpenAI-style clients normalise) would otherwise be
+      // rejected upstream as an invalid param and surface as an empty stream.
+      const wanted = model.toLowerCase()
+      const entry = this.catalog?.current().find(item =>
+        item.id.toLowerCase() === wanted
+        || (item.name ?? '').toLowerCase() === wanted
+        || item.id.replace(/-Official$/i, '').toLowerCase() === wanted)
+      // Canonicalise the label so the SSE chunks echo the catalog id rather
+      // than the caller's spelling.
+      if (entry !== undefined && entry.id !== model) {
+        model = entry.id
+        input['model'] = entry.id
+      }
       // The catalog row carries both halves once discovery has run; the
       // resolver covers ids that came from elsewhere (startup wire map).
       const fromCatalog = entry?.wireConfigName === undefined

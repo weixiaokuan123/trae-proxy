@@ -101,6 +101,15 @@ curl -H "Authorization: Bearer $KEY" http://127.0.0.1:39303/status
 本代理**每次请求都实时重读**对应区域的 `storage.json`（无缓存）。要换账号时，
 直接在 Trae / TRAE SOLO CN 客户端里切换登录即可，**无需重启本代理**，下一次请求自动跟随。
 
+## 每日自动签到
+
+- 每天早上 **07:00–10:00 之间随机一个时刻**自动领取 Trae 每日签到积分（仅国内区；国际区不支持）。
+- 计划时刻当天首次运行即固定，持久化在 `state/signin-state.json`（已 gitignore），重启不重摇。
+- 端点：`POST https://api.trae.cn/trae/api/v2/ug/checkin_credits/status`（状态）、`.../claim`（领取），body `{req_source:1}`。
+- 三重防重：进程内当天门禁 + 领取前先查状态 + 服务端返回已签幂等。
+- 环境变量：`TRAE_SIGNIN=off` 关闭；`TRAE_SIGNIN_START_HOUR=7`、`TRAE_SIGNIN_END_HOUR=10` 调整窗口。
+- 查看状态：`GET http://127.0.0.1:39303/signin/status`；手动触发：`POST http://127.0.0.1:39303/signin/claim`（幂等）。
+
 ## 日常运维（Windows）
 
 | 操作 | 命令 |

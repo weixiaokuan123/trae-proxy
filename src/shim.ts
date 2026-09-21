@@ -20,6 +20,8 @@ import { resolveTraeIdentity } from './identity.ts'
 import { traeStorageCandidates } from './paths.ts'
 import { regionOfEdition, type TraeRegion } from './region.ts'
 import type { TraeUpstreamClient, TraeUpstreamErrorKind } from './upstream.ts'
+import { redactPaths } from './redact.ts'
+import { TRAE_CONNECT_VERSION } from './version.ts'
 
 export interface ShimLogger {
   info(...args: unknown[]): void
@@ -93,7 +95,8 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 function writeError(res: ServerResponse, status: number, kind: string, message: string): void {
-  writeJson(res, status, { error: { message, type: kind, code: kind } })
+  // 统一脱敏本机路径，避免日志/界面泄露真实用户名与目录。
+  writeJson(res, status, { error: { message: redactPaths(message), type: kind, code: kind } })
 }
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
@@ -163,7 +166,7 @@ export function createTraeShim(options: TraeShimOptions): TraeShim {
       if (!bearerOk(req)) return writeError(res, 401, 'unauthorized', 'Missing or invalid bearer')
       const url = req.url ?? '/'
       if (req.method === 'GET' && (url === '/healthz' || url === '/healthz/')) {
-        return writeJson(res, 200, { ok: true, region })
+        writeJson(res, 200, { ok: true, region, version: TRAE_CONNECT_VERSION })
       }
       if (req.method === 'GET' && (url === '/status' || url === '/status/')) {
         return await status(req, res)

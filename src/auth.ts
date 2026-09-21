@@ -13,11 +13,17 @@
  * @module trae-proxy/auth
  */
 
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { traeStorageCandidates, type TraeEdition, type TraeStorageCandidate } from './paths.ts'
 import { parseTraeCliToken, parseTraeStorageDocument } from './decrypt.ts'
 import { regionOfCredential, regionOfEdition, type TraeRegion } from './region.ts'
 import type { TraeRefreshOutcome } from './refresh.ts'
+
+/** 文件 stat 签名：mtimeMs+size。文件未变则签名稳定，切号/续期后变化。 */
+async function statSigOf(filePath: string): Promise<string> {
+  const s = await stat(filePath)
+  return `${s.mtimeMs}:${s.size}`
+}
 
 export interface TraeCredential {
   accessToken: string
@@ -121,6 +127,12 @@ export class LiveTraeStore {
   private readonly refreshMarginMs: number
   private mem: { key: string; credential: TraeCredential } | undefined
   private inflight: Promise<TraeCredential> | undefined
+  /**
+   * 凭据文件的 stat 签名（mtimeMs+size）。命中且未到刷新阈值时，
+   * 直接复用内存凭据，跳过「读整个 storage.json + AES 解密」，
+   * 避免高频对话时反复解密。文件被切号/续期改写后 stat 变化，自动失效重读。
+   */
+  private statSig: string | undefined
 
   constructor(options: LiveTraeStoreOptions) {
     this.region = options.region
@@ -180,6 +192,16 @@ export class LiveTraeStore {
   }
 
   async resolve(): Promise<TraeCredential> {
+    // 快速路径：凭据文件 stat 未变且内存有效（未到刷新阈值）→ 直接复用，
+    // 跳过 readFile + AES 解密。stat 是轻量元数据调用，开销远低于解密。
+    if (this.mem !== undefined) {
+      const currentSig = await this.liveStatSig().catch(() => undefined)
+      if (currentSig !== undefined && currentSig === this.statSig
+        && this.mem.credential.expiresAtMs > Date.now() + this.refreshMarginMs) {
+        return this.mem.credential
+      }
+    }
+
     const live = await this.readCurrent()
     if (live === undefined) {
       throw new Error(`trae(${this.region}): 未找到可用登录态（${this.candidates().map(c => c.path).join(' 或 ')}）`)
@@ -192,11 +214,22 @@ export class LiveTraeStore {
       this.mem = { key, credential: c }
       this.inflight = undefined
     }
+    // 记录本次凭据来源文件的 stat 签名，供下一次快速路径使用
+    this.statSig = await statSigOf(live.candidate.path).catch(() => this.statSig)
     if (this.mem.credential.expiresAtMs > Date.now() + this.refreshMarginMs) return this.mem.credential
 
     this.inflight ??= this.refreshNow(this.mem.credential)
       .finally(() => { this.inflight = undefined })
     return this.inflight
+  }
+
+  /** 当前 live 候选文件的 stat 签名（取第一个存在的候选）。 */
+  private async liveStatSig(): Promise<string | undefined> {
+    for (const candidate of this.candidates()) {
+      const sig = await statSigOf(candidate.path).catch(() => undefined)
+      if (sig !== undefined) return sig
+    }
+    return undefined
   }
 
   private async refreshNow(credential: TraeCredential): Promise<TraeCredential> {

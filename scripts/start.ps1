@@ -34,6 +34,17 @@ function Owner-PidOf([int]$Port) {
   return 0
 }
 
+# Cap log growth: rotate logs larger than 5 MB before a fresh start (append mode).
+function Rotate-Log([string]$Path, [int]$MaxBytes = 5MB) {
+  if (Test-Path $Path) {
+    if ((Get-Item $Path).Length -gt $MaxBytes) {
+      $bak = "$Path.1"
+      Remove-Item $bak -Force -ErrorAction SilentlyContinue
+      Move-Item $Path $bak -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 if ($Foreground) {
   node (Join-Path $Root 'src\serve.ts')
   exit $LASTEXITCODE
@@ -45,7 +56,9 @@ if (All-PortsUp $Ports) {
 }
 
 $serve = Join-Path $Root 'src\serve.ts'
-$cmd = 'cmd /c node "' + $serve + '" > "' + $OutLog + '" 2> "' + $ErrLog + '"'
+Rotate-Log $OutLog
+Rotate-Log $ErrLog
+$cmd = 'cmd /c node "' + $serve + '" >> "' + $OutLog + '" 2>> "' + $ErrLog + '"'
 $sh = New-Object -ComObject WScript.Shell
 $sh.Run($cmd, 0, $false) | Out-Null
 

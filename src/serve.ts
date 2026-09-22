@@ -154,6 +154,11 @@ async function buildRegion(region: TraeRegion): Promise<{ shim: TraeShim; rt: Re
       const outcome = await scheduler.runNow(region, () => signin.claim())
       return { region, ...outcome }
     } : undefined,
+    credits: SIGNIN_ENABLED ? async () => {
+      if (region !== 'cn') return { region, enabled: false }
+      const u = await signin.getUsage()
+      return { region, http: u.http, usage: u.body }
+    } : undefined,
   })
   return { shim, rt }
 }

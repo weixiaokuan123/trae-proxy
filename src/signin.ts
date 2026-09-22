@@ -39,6 +39,7 @@ interface StatusBody {
 const CN_PAY_BASE = 'https://api.trae.cn'
 const STATUS_PATH = '/trae/api/v2/ug/checkin_credits/status'
 const CLAIM_PATH = '/trae/api/v2/ug/checkin_credits/claim'
+const USAGE_PATH = '/trae/api/v2/pay/ide_user_ent_usage'
 
 export class TraeSigninClient {
   private readonly region: TraeRegion
@@ -90,6 +91,26 @@ export class TraeSigninClient {
       extraCredits: typeof body.extra_credits === 'number' ? body.extra_credits : 0,
       raw: body,
     }
+  }
+
+  /**
+   * 查询账户额度用量（`/trae/api/v2/pay/ide_user_ent_usage`）。
+   * 只读，返回上游原始负载；字段随版本变化，上层按需取用。
+   */
+  async getUsage(): Promise<{ http: number; body: unknown }> {
+    const credential = await this.store.resolve()
+    const identity = await this.resolveIdentity()
+    const headers = buildTraeHeaders(credential, identity, { profile: 'model-detail' })
+    headers['Content-Type'] = 'application/json'
+    const res = await fetch(`${CN_PAY_BASE}${USAGE_PATH}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ req_source: 1 }),
+    })
+    const text = await res.text()
+    let body: unknown = text
+    try { body = JSON.parse(text) } catch { /* 保留原文 */ }
+    return { http: res.status, body }
   }
 
   async claim(): Promise<{ claimed: boolean; already: boolean; message: string }> {

@@ -49,6 +49,8 @@ export interface TraeShimOptions {
   signinStatus?: () => Promise<unknown>
   /** 立即检查/领取今日签到（幂等） */
   signinClaim?: () => Promise<unknown>
+  /** 账户额度用量（只读）；不提供则 /credits 返回 404 */
+  credits?: () => Promise<unknown>
 }
 
 const BODY_LIMIT = 64 * 1024 * 1024
@@ -170,6 +172,11 @@ export function createTraeShim(options: TraeShimOptions): TraeShim {
       }
       if (req.method === 'GET' && (url === '/status' || url === '/status/')) {
         return await status(req, res)
+      }
+      if (req.method === 'GET' && (url === '/credits' || url === '/credits/')) {
+        if (!options.credits) return writeError(res, 404, 'not_found', 'credits not available')
+        try { return writeJson(res, 200, await options.credits()) }
+        catch (error) { return writeError(res, 502, 'credits_error', error instanceof Error ? error.message : String(error)) }
       }
       if (req.method === 'GET' && (url === '/v1/models' || url === '/v1/models/')) {
         return writeJson(res, 200, {

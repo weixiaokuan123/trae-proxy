@@ -203,10 +203,25 @@ export function createTraeShim(options: TraeShimOptions): TraeShim {
         try { JSON.parse(raw) } catch { return writeError(res, 400, 'invalid_json', 'Request body must be valid JSON') }
         const controller = new AbortController()
         const abort = (): void => controller.abort()
+        // 监听器用完即摘：HTTP keep-alive 下 socket 会被复用，若每次请求都挂
+        // close/aborted 而不移除，会累积成 MaxListenersExceededWarning；
+        // 更糟的是上一个请求遗留的 abort() 会在本请求进行中触发，
+        // 把在途流失效，导致「headers 已发送后又写头」。
+        const cleanup = (): void => {
+          req.off('aborted', abort)
+          req.socket.off('close', abort)
+          res.off('close', cleanup)
+          res.off('finish', cleanup)
+        }
         req.once('aborted', abort)
         req.socket.once('close', abort)
+        res.once('close', cleanup)
+        res.once('finish', cleanup)
         const result = await options.client.chatStream(raw, controller.signal)
-        if (!result.ok) return writeError(res, STATUS_BY_KIND[result.kind], result.kind, result.message)
+        if (!result.ok) {
+          cleanup()
+          return writeError(res, STATUS_BY_KIND[result.kind], result.kind, result.message)
+        }
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
@@ -218,6 +233,7 @@ export function createTraeShim(options: TraeShimOptions): TraeShim {
           options.logger?.warn(`trae(${region}): upstream stream failed`, error)
           if (!res.writableEnded) res.end()
         })
+        body.on('end', cleanup)
         body.pipe(res)
         return
       }

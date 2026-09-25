@@ -168,7 +168,7 @@ export function createTraeShim(options: TraeShimOptions): TraeShim {
       if (!bearerOk(req)) return writeError(res, 401, 'unauthorized', 'Missing or invalid bearer')
       const url = req.url ?? '/'
       if (req.method === 'GET' && (url === '/healthz' || url === '/healthz/')) {
-        writeJson(res, 200, { ok: true, region, version: TRAE_CONNECT_VERSION })
+        return writeJson(res, 200, { ok: true, region, version: TRAE_CONNECT_VERSION })
       }
       if (req.method === 'GET' && (url === '/status' || url === '/status/')) {
         return await status(req, res)

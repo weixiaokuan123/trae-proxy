@@ -10,7 +10,7 @@
  *
  * 状态文件结构：{ [target]: { date: 'YYYY-MM-DD', runAtSec: 29460, claimed: true, ... } }
  *
- * @module signin-scheduler
+ * @module trae-proxy/scheduler
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -27,6 +27,8 @@ export interface SigninScheduleEntry {
   result?: string
   /** 最近一次尝试的本地时间戳 ms */
   attemptedAtMs?: number
+  /** 未领取时的下次允许重试时刻（ms）；未到点前 runIfDue 直接跳过，避免空转。 */
+  retryAfterMs?: number
 }
 
 export type SigninStateStore = Record<string, SigninScheduleEntry>
@@ -43,6 +45,15 @@ export interface SchedulerOptions {
 
 /** 连续失败时，结果写盘的最小间隔（默认 1 小时）。 */
 const FAIL_WRITE_BACKOFF_MS = 60 * 60 * 1000
+
+/**
+ * 「未领取」时的重试冷却（默认 1 小时）。
+ *
+ * 上游返回「未领取」有多种原因（活动未开启、该区域无活动、未到刷新时间），
+ * 原实现会在每个 tick（5 分钟）重新调用上游并整份重写状态文件，一天空转数百次。
+ * 冷却后按小时重试，上游调用与写盘各降约 12 倍。
+ */
+const RETRY_COOLDOWN_MS = 60 * 60 * 1000
 
 function localDate(d = new Date()): string {
   const y = d.getFullYear()
@@ -128,7 +139,11 @@ export class SigninScheduler {
   /** 返回某目标今天的计划（确保已生成），不触发领取。 */
   async plan(target: string): Promise<SigninScheduleEntry> {
     await this.load()
+    const before = this.store[target]
     const entry = ensureEntry(this.store, target, this.options.startHour, this.options.endHour)
+    // 仅在「新生成 / 跨天重建」时落盘：既保证重启后当天时刻不再重摇，
+    // 又不会因为每次查询计划都写一次盘（ensureEntry 对同日返回同一对象）。
+    if (before !== entry) await this.save().catch(() => {})
     return entry
   }
 
@@ -152,6 +167,7 @@ export class SigninScheduler {
     const entry = ensureEntry(this.store, target, this.options.startHour, this.options.endHour, now)
     if (entry.claimed) return { ran: false, entry }
     if (!isDue(entry, now)) return { ran: false, entry }
+    if ((entry.retryAfterMs ?? 0) > now.getTime()) return { ran: false, entry }
     if (this.inflight.has(target)) return { ran: false, entry }
 
     this.inflight.add(target)
@@ -161,6 +177,9 @@ export class SigninScheduler {
       entry.claimed = outcome.claimed || outcome.already
       entry.result = outcome.message
       entry.attemptedAtMs = Date.now()
+      // 未领取则进入冷却，避免每 5 分钟空转调用上游并重写状态文件
+      if (entry.claimed) delete entry.retryAfterMs
+      else entry.retryAfterMs = entry.attemptedAtMs + RETRY_COOLDOWN_MS
       await this.save()
       this.options.log?.(`签到[${target}] ${outcome.message}`)
       return { ran: true, entry }
@@ -201,6 +220,8 @@ export class SigninScheduler {
       entry.claimed = outcome.claimed || outcome.already
       entry.result = outcome.message
       entry.attemptedAtMs = Date.now()
+      if (entry.claimed) delete entry.retryAfterMs
+      else entry.retryAfterMs = entry.attemptedAtMs + RETRY_COOLDOWN_MS
       await this.save()
       this.options.log?.(`签到[${target}] 手动：${outcome.message}`)
       return { ran: true, entry }

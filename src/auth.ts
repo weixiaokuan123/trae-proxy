@@ -19,6 +19,8 @@ import { parseTraeCliToken, parseTraeStorageDocument } from './decrypt.ts'
 import { regionOfCredential, regionOfEdition, type TraeRegion } from './region.ts'
 import type { TraeRefreshOutcome } from './refresh.ts'
 
+import { redactPaths } from './redact.ts'
+
 /** 文件 stat 签名：mtimeMs+size。文件未变则签名稳定，切号/续期后变化。 */
 async function statSigOf(filePath: string): Promise<string> {
   const s = await stat(filePath)
@@ -258,7 +260,7 @@ export class LiveTraeStore {
   async status(): Promise<TraeStatus> {
     const live = await this.readCurrent()
     if (live === undefined) {
-      return { state: 'signed-out', region: this.region, filePath: this.livePath() }
+      return { state: 'signed-out', region: this.region, filePath: redactPaths(this.livePath()) }
     }
     return {
       state: 'signed-in',
@@ -266,7 +268,7 @@ export class LiveTraeStore {
       account: live.credential.accountName ?? live.credential.userId,
       edition: live.credential.edition,
       ...live.credential.host === '' ? {} : { host: live.credential.host },
-      filePath: live.candidate.path,
+      filePath: redactPaths(live.candidate.path),
       expiresAtMs: live.credential.expiresAtMs,
     }
   }

@@ -50,16 +50,17 @@ function reasoningEffortMap(reasoning: TraeReasoningCapability | undefined) {
 
 /** 把 SOLO get_detail_param 的模型条目转成目录条目（id 即 wire config_name）。 */
 export function fromSoloModels(models: readonly TraeSoloModel[]): TraeModelInfo[] {
-  return models.map(model => ({
-    id: model.id,
-    name: model.name,
-    ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
-    ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
-    ...model.function === undefined ? {} : { wireFunction: model.function },
-    ...reasoningEffortMap(model.reasoning) === undefined
-      ? {}
-      : { reasoningEfforts: reasoningEffortMap(model.reasoning) },
-  }))
+  return models.map(model => {
+    const reasoningEfforts = reasoningEffortMap(model.reasoning)
+    return {
+      id: model.id,
+      name: model.name,
+      ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
+      ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
+      ...model.function === undefined ? {} : { wireFunction: model.function },
+      ...reasoningEfforts === undefined ? {} : { reasoningEfforts },
+    }
+  })
 }
 
 export class TraeCatalog {
@@ -74,7 +75,7 @@ export class TraeCatalog {
   }
 
   set(models: readonly TraeModelInfo[]): void {
-    if (models.length === 0) throw new Error('trae model catalog cannot be empty')
+    if (models.length === 0) throw new Error('Trae 模型目录不能为空')
     this.models = models.map(model => ({ ...model }))
   }
 }

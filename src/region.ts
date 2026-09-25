@@ -9,7 +9,7 @@
  * authoritative claim, the credential host suffix is the fallback, and the
  * edition label is the last resort.
  *
- * @module dsh-connect-trae/region
+ * @module trae-proxy/region
  */
 
 import type { TraeEdition } from './paths.ts'

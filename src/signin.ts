@@ -13,7 +13,7 @@
  * @module trae-proxy/signin
  */
 
-import type { LiveTraeStore } from './auth.ts'
+import type { LiveTraeStore, TraeCredential } from './auth.ts'
 import { buildTraeHeaders } from './protocol.ts'
 import type { TraeIdentity } from './identity.ts'
 import type { TraeRegion } from './region.ts'
@@ -44,12 +44,12 @@ const USAGE_PATH = '/trae/api/v2/pay/ide_user_ent_usage'
 export class TraeSigninClient {
   private readonly region: TraeRegion
   private readonly store: LiveTraeStore
-  private readonly resolveIdentity: () => Promise<TraeIdentity>
+  private readonly resolveIdentity: (credential?: TraeCredential) => Promise<TraeIdentity>
 
   constructor(
     region: TraeRegion,
     store: LiveTraeStore,
-    resolveIdentity: () => Promise<TraeIdentity>,
+    resolveIdentity: (credential?: TraeCredential) => Promise<TraeIdentity>,
   ) {
     this.region = region
     this.store = store
@@ -62,7 +62,8 @@ export class TraeSigninClient {
 
   private async postJson(path: string): Promise<{ http: number; body: StatusBody }> {
     const credential = await this.store.resolve()
-    const identity = await this.resolveIdentity()
+    // 复用已解析的 credential，identity 不再二次 resolve。
+    const identity = await this.resolveIdentity(credential)
     const headers = buildTraeHeaders(credential, identity, { profile: 'model-detail' })
     headers['Content-Type'] = 'application/json'
     const res = await fetch(`${CN_PAY_BASE}${path}`, {
@@ -99,7 +100,8 @@ export class TraeSigninClient {
    */
   async getUsage(): Promise<{ http: number; body: unknown }> {
     const credential = await this.store.resolve()
-    const identity = await this.resolveIdentity()
+    // 复用已解析的 credential，identity 不再二次 resolve。
+    const identity = await this.resolveIdentity(credential)
     const headers = buildTraeHeaders(credential, identity, { profile: 'model-detail' })
     headers['Content-Type'] = 'application/json'
     const res = await fetch(`${CN_PAY_BASE}${USAGE_PATH}`, {

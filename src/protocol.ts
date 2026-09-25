@@ -1,48 +1,16 @@
+/**
+ * Trae 上游请求协议：公共请求头构造与端点拼接。
+ *
+ * 验证记录见 docs/INTL_SG_EVIDENCE.md §2.3：两个网关接受完全相同的头部形状
+ * （x-app-id / 身份头 / Cloud-IDE-JWT），因此不再按 edition 分叉。
+ *
+ * @module trae-proxy/protocol
+ */
+
 import { randomUUID } from 'node:crypto'
 import type { TraeCredential } from './auth.ts'
 import type { TraeIdentity } from './identity.ts'
 import { identityHeaders } from './identity.ts'
-
-export const TRAE_CN_AGENT_TASK_PATH = '/api/agent/v3/create_agent_task'
-export const TRAE_CN_TITLE_PATH = '/api/agent/v3/llm_utils_chat'
-
-export interface OpenAITextMessage {
-  role: 'assistant' | 'system' | 'user'
-  content: string
-}
-
-export interface TraeAgentTaskBody {
-  messages: { role: OpenAITextMessage['role']; content: { type: 'text'; text: string }[] }[]
-  model: string
-  function: string
-  stream: true
-  request_id: string
-  session_id: string
-  max_tokens?: number
-}
-
-/**
- * Evidence-bounded body draft. It is intentionally pure and offline; the
- * network client remains disabled until a controlled request validates it.
- */
-export function buildTraeAgentTaskBody(
-  messages: readonly OpenAITextMessage[],
-  model: string,
-  options: { maxTokens?: number; requestId?: string; sessionId?: string } = {},
-): TraeAgentTaskBody {
-  if (messages.length === 0) throw new Error('Trae agent task requires at least one message')
-  const requestId = options.requestId ?? randomUUID()
-  const sessionId = options.sessionId ?? requestId
-  return {
-    messages: messages.map(message => ({ role: message.role, content: [{ type: 'text', text: message.content }] })),
-    model,
-    function: 'inline_chat',
-    stream: true,
-    request_id: requestId,
-    session_id: sessionId,
-    ...options.maxTokens === undefined ? {} : { max_tokens: options.maxTokens },
-  }
-}
 
 export type TraeHeaderProfile = 'agent-task' | 'model-detail' | 'raw-chat' | 'native-curl'
 

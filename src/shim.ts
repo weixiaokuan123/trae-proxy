@@ -7,6 +7,9 @@
  *
  * 相对原版的改动：支持固定端口与持久 bearer；新增只读 GET /status。
  *
+ * 文案约定：对外 HTTP 错误体的 `message` 保持英文（便于外部按英文关键字匹配），
+ * 内部抛错与日志文案统一为中文；错误码 `kind`/`code` 与状态码语义保持不变。
+ *
  * @module trae-proxy/shim
  */
 
@@ -21,7 +24,7 @@ import { traeStorageCandidates } from './paths.ts'
 import { regionOfEdition, type TraeRegion } from './region.ts'
 import type { TraeUpstreamClient, TraeUpstreamErrorKind } from './upstream.ts'
 import { redactPaths } from './redact.ts'
-import { TRAE_CONNECT_VERSION } from './version.ts'
+import { TRAE_PROXY_VERSION } from './version.ts'
 
 export interface ShimLogger {
   info(...args: unknown[]): void
@@ -108,7 +111,7 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
     req.on('data', (chunk: Buffer) => {
       size += chunk.length
       if (size > BODY_LIMIT) {
-        reject(new Error('request body too large'))
+        reject(new Error('请求体过大'))
         req.destroy()
       } else {
         chunks.push(chunk)
@@ -167,8 +170,10 @@ export function createTraeShim(options: TraeShimOptions): TraeShim {
       if (!originIsLoopback(req.headers.origin)) return writeError(res, 403, 'origin_not_allowed', 'Origin must be loopback')
       if (!bearerOk(req)) return writeError(res, 401, 'unauthorized', 'Missing or invalid bearer')
       const url = req.url ?? '/'
+      // 路径判定只做一次 query 剥离，避免每个路由重复 split('?')。
+      const path = url.split('?')[0]
       if (req.method === 'GET' && (url === '/healthz' || url === '/healthz/')) {
-        return writeJson(res, 200, { ok: true, region, version: TRAE_CONNECT_VERSION })
+        return writeJson(res, 200, { ok: true, region, version: TRAE_PROXY_VERSION })
       }
       if (req.method === 'GET' && (url === '/status' || url === '/status/')) {
         return await status(req, res)
@@ -184,12 +189,12 @@ export function createTraeShim(options: TraeShimOptions): TraeShim {
           data: options.catalog.current().map(model => ({ id: model.id, object: 'model', created: 0, owned_by: `trae-${region}` })),
         })
       }
-      if (url.split('?')[0] === '/signin/status' && req.method === 'GET') {
+      if (path === '/signin/status' && req.method === 'GET') {
         if (!options.signinStatus) return writeError(res, 404, 'not_found', 'sign-in not available')
         try { return writeJson(res, 200, await options.signinStatus()) }
         catch (error) { return writeError(res, 502, 'signin_error', error instanceof Error ? error.message : String(error)) }
       }
-      if (url.split('?')[0] === '/signin/claim' && req.method === 'POST') {
+      if (path === '/signin/claim' && req.method === 'POST') {
         if (!options.signinClaim) return writeError(res, 404, 'not_found', 'sign-in not available')
         try { return writeJson(res, 200, await options.signinClaim()) }
         catch (error) { return writeError(res, 502, 'signin_error', error instanceof Error ? error.message : String(error)) }
@@ -230,7 +235,7 @@ export function createTraeShim(options: TraeShimOptions): TraeShim {
         })
         const body = Readable.fromWeb(result.response.body as Parameters<typeof Readable.fromWeb>[0])
         body.on('error', (error: unknown) => {
-          options.logger?.warn(`trae(${region}): upstream stream failed`, error)
+          options.logger?.warn(`trae(${region}): 上游流失效`, error)
           if (!res.writableEnded) res.end()
         })
         body.on('end', cleanup)
@@ -239,7 +244,7 @@ export function createTraeShim(options: TraeShimOptions): TraeShim {
       }
       writeError(res, 404, 'not_found', `No such route: ${req.method} ${url}`)
     } catch (error: unknown) {
-      options.logger?.error(`trae(${region}): shim request failed`, error)
+      options.logger?.error(`trae(${region}): shim 请求处理失败`, error)
       if (!res.headersSent) writeError(res, 500, 'internal', 'Internal shim error')
       else if (!res.writableEnded) res.end()
     }

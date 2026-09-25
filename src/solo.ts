@@ -1,3 +1,13 @@
+/**
+ * Trae SOLO 上游客户端：模型目录拉取（get_detail_param）与对话流
+ * （llm_utils_chat）。
+ *
+ * 目录按 `TRAE_DIRECTORY_FUNCTIONS` 顺序对同一凭据的多个 SOLO function 求并集；
+ * 对话前会把 OpenAI 形状的 body 规整成该端点可接受的 envelope。
+ *
+ * @module trae-proxy/solo
+ */
+
 import type { TraeCredential } from './auth.ts'
 import type { TraeIdentity } from './identity.ts'
 import { buildTraeCnHeaders, traeEndpoint } from './protocol.ts'
@@ -81,7 +91,7 @@ export function prepareSoloBody(source: string, defaultModel = 'glm-5.2', functi
       if (message['role'] === 'tool') {
         message['role'] = 'tool'
         if (typeof message['tool_call_id'] !== 'string' || message['tool_call_id'] === '') {
-          throw new Error('Trae SOLO tool message requires tool_call_id')
+          throw new Error('Trae SOLO tool 消息需要 tool_call_id')
         }
       }
     }
@@ -110,7 +120,11 @@ export interface TraeSoloModel {
 
 export interface TraeSoloClientOptions {
   credential(): Promise<TraeCredential>
-  identity(): Promise<TraeIdentity>
+  /**
+   * 解析设备身份。已拿到凭据时把凭据传入，复用同一次 `resolve()`，
+   * 避免同一请求里凭据被解析两次。
+   */
+  identity(credential?: TraeCredential): Promise<TraeIdentity>
   baseUrl?: string
   fetchImpl?: typeof fetch
   log?: (message: string, detail?: unknown) => void
@@ -137,7 +151,9 @@ export class TraeSoloUpstreamClient {
    * paygo variants) never surface even though they appear here.
    */
   async fetchModels(signal?: AbortSignal): Promise<TraeSoloModel[]> {
-    const [credential, identity] = await Promise.all([this.options.credential(), this.options.identity()])
+    // 凭据只解析一次，解析出的 credential 直接复用给 identity，避免二次 resolve。
+    const credential = await this.options.credential()
+    const identity = await this.options.identity(credential)
     const region = regionOfCredential(credential)
     const base = this.options.baseUrl ?? REGION_GATEWAYS[region].chat
     const headers = { ...buildTraeCnHeaders(credential, identity), Accept: 'application/json' }
@@ -172,7 +188,7 @@ export class TraeSoloUpstreamClient {
     }
     const models = [...byId.values()]
     if (models.length === 0) {
-      throw new Error(`Trae SOLO models response contained no models (${failures.join('; ') || 'empty directory'})`)
+      throw new Error(`Trae SOLO 模型响应不含任何模型（${failures.join('; ') || '目录为空'}）`)
     }
     return models
   }
@@ -219,9 +235,12 @@ export class TraeSoloUpstreamClient {
     let prepared: string
     try { prepared = prepareSoloBody(bodyJson, undefined, functionName) }
     catch { return { ok: false, status: 400, kind: 'client', message: 'invalid JSON request' } }
-    const [credential, identity] = await Promise.all([this.options.credential(), this.options.identity()])
+    // 凭据只解析一次并复用给 identity；region 也只算一次。
+    const credential = await this.options.credential()
+    const identity = await this.options.identity(credential)
+    const region = regionOfCredential(credential)
     const headers = buildTraeCnHeaders(credential, identity)
-    const base = this.options.baseUrl ?? REGION_GATEWAYS[regionOfCredential(credential)].chat
+    const base = this.options.baseUrl ?? REGION_GATEWAYS[region].chat
     let response: Response
     try {
       response = await this.fetchImpl(traeEndpoint(base, TRAE_SOLO_CHAT_PATH), {
@@ -232,11 +251,13 @@ export class TraeSoloUpstreamClient {
     }
     if (response.ok) return { ok: true, response }
     const text = (await response.text()).slice(0, 1024)
-    this.options.log?.('dsh-connect-trae: llm_utils_chat rejected', {
+    // prepared 是合法 JSON（prepareSoloBody 已解析过），这里只解析一次复用三个字段。
+    const preparedBody = JSON.parse(prepared) as Record<string, unknown>
+    this.options.log?.(`trae(${region}): llm_utils_chat 被上游拒绝`, {
       status: response.status,
-      model: JSON.parse(prepared)['model'],
-      configName: JSON.parse(prepared)['config_name'],
-      reasoningEffort: JSON.parse(prepared)['reasoning_effort'],
+      model: preparedBody['model'],
+      configName: preparedBody['config_name'],
+      reasoningEffort: preparedBody['reasoning_effort'],
       body: text,
     })
     return { ok: false, status: response.status, kind: classify(response.status), message: text || `Trae SOLO returned HTTP ${response.status}` }

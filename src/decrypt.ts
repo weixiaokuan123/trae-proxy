@@ -1,3 +1,13 @@
+/**
+ * Trae 本地凭据解密：Electron `storage.json` 里 `iCubeAuthInfo://icube.cloudide`
+ * 的 AES 密文，以及 CLI 明文 JWT 的解析。
+ *
+ * 两种密文头（aes / aes-private）对应两套 salt 组合；解密后先校验 SHA-512
+ * 完整性再交给上层。这里只解析，不联网、不写盘。
+ *
+ * @module trae-proxy/decrypt
+ */
+
 import { createDecipheriv, createHash } from 'node:crypto'
 
 export const TRAE_AUTH_STORAGE_KEY = 'iCubeAuthInfo://icube.cloudide'
@@ -16,12 +26,12 @@ function xor(a: Uint8Array, b: Uint8Array): Buffer {
 function encryptionType(header: Buffer): EncryptionType {
   if (header.equals(Buffer.from([0x74, 0x63, 0x05, 0x10, 0x00, 0x00]))) return 'aes'
   if (header.equals(Buffer.from([18, 57, 32, 32, 2, 3]))) return 'aes-private'
-  throw new Error('unsupported Trae auth encryption header')
+  throw new Error('不支持的 Trae 凭据加密头')
 }
 
 export function decryptTraeStorageValue(encoded: string): string {
   const buffer = Buffer.from(encoded, 'base64')
-  if (buffer.length <= 102) throw new Error('Trae auth ciphertext is too short')
+  if (buffer.length <= 102) throw new Error('Trae 凭据密文过短')
   const type = encryptionType(buffer.subarray(0, 6))
   const random = buffer.subarray(6, 38)
   const encrypted = buffer.subarray(38)
@@ -30,26 +40,26 @@ export function decryptTraeStorageValue(encoded: string): string {
   const derived = createHash('sha512').update(Buffer.concat([first, salt])).digest()
   const decipher = createDecipheriv('aes-128-cbc', derived.subarray(0, 16), derived.subarray(16, 32))
   const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()])
-  if (decrypted.length < 64) throw new Error('Trae auth plaintext is too short')
+  if (decrypted.length < 64) throw new Error('Trae 凭据明文过短')
   const expected = decrypted.subarray(0, 64)
   const plaintext = decrypted.subarray(64)
   const actual = createHash('sha512').update(plaintext).digest()
-  if (!expected.equals(actual)) throw new Error('Trae auth integrity check failed')
+  if (!expected.equals(actual)) throw new Error('Trae 凭据完整性校验失败')
   return plaintext.toString('utf8')
 }
 
 export function parseTraeAuthValue(value: string): unknown {
   const trimmed = value.trim()
-  if (trimmed === '') throw new Error('Trae auth value is empty')
+  if (trimmed === '') throw new Error('Trae 凭据值为空')
   const plaintext = trimmed.startsWith('{') ? trimmed : decryptTraeStorageValue(trimmed)
   return JSON.parse(plaintext) as unknown
 }
 
 export function parseTraeStorageDocument(text: string): unknown {
   const parsed = JSON.parse(text) as unknown
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('Trae storage document must be an object')
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('Trae storage 文档必须是对象')
   const value = (parsed as Record<string, unknown>)[TRAE_AUTH_STORAGE_KEY]
-  if (typeof value !== 'string') throw new Error(`Trae storage document has no ${TRAE_AUTH_STORAGE_KEY}`)
+  if (typeof value !== 'string') throw new Error(`Trae storage 文档缺少 ${TRAE_AUTH_STORAGE_KEY}`)
   return parseTraeAuthValue(value)
 }
 
@@ -87,23 +97,23 @@ function decodeBase64UrlJson(segment: string): Record<string, unknown> | undefin
  */
 export function parseTraeCliToken(text: string): TraeCliTokenClaims {
   const trimmed = text.trim()
-  if (trimmed === '') throw new Error('Trae CLI token file is empty')
+  if (trimmed === '') throw new Error('Trae CLI token 文件为空')
   let token = trimmed
   if (trimmed.startsWith('{')) {
     const envelope = JSON.parse(trimmed) as Record<string, unknown>
     const candidate = envelope['token'] ?? envelope['accessToken'] ?? envelope['jwt']
-    if (typeof candidate !== 'string' || candidate.trim() === '') throw new Error('Trae CLI token document has no token field')
+    if (typeof candidate !== 'string' || candidate.trim() === '') throw new Error('Trae CLI token 文档缺少 token 字段')
     token = candidate.trim()
   }
   const segments = token.split('.')
-  if (segments.length !== 3 || segments.some(segment => segment === '')) throw new Error('Trae CLI token is not a three-part JWT')
+  if (segments.length !== 3 || segments.some(segment => segment === '')) throw new Error('Trae CLI token 不是三段式 JWT')
   const payload = decodeBase64UrlJson(segments[1]!)
-  if (payload === undefined) throw new Error('Trae CLI token payload is not decodable JSON')
+  if (payload === undefined) throw new Error('Trae CLI token 负载不是可解析的 JSON')
   const data = typeof payload['data'] === 'object' && payload['data'] !== null && !Array.isArray(payload['data'])
     ? payload['data'] as Record<string, unknown>
     : undefined
   const userId = typeof data?.['user_id'] === 'string' ? data['user_id'] : undefined
-  if (userId === undefined || userId === '') throw new Error('Trae CLI token has no data.user_id claim')
+  if (userId === undefined || userId === '') throw new Error('Trae CLI token 缺少 data.user_id 声明')
   const exp = payload['exp']
   const expiresAtMs = typeof exp === 'number' && Number.isFinite(exp) && exp > 0 ? exp * 1000 : undefined
   return { accessToken: token, userId, ...expiresAtMs === undefined ? {} : { expiresAtMs } }

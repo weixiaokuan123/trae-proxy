@@ -1,3 +1,10 @@
+/**
+ * SSE 增量解码与 Trae 事件归一：把上游按块到达的 `event:`/`data:` 文本，
+ * 解成结构化事件（queue / progress / delta / usage / done / unknown）。
+ *
+ * @module trae-proxy/sse
+ */
+
 export interface SseEvent {
   event?: string
   data: string

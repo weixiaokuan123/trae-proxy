@@ -1,3 +1,12 @@
+/**
+ * Trae 登录态候选路径探测：按平台枚举桌面版 `storage.json` 与 CLI home 的
+ * `trae-jwt-token`，供凭据 store 依次尝试。
+ *
+ * 只做路径拼接，不触碰文件内容；平台/家目录/环境变量均可注入，便于测试。
+ *
+ * @module trae-proxy/paths
+ */
+
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 

@@ -1,3 +1,12 @@
+/**
+ * Trae SOLO 流 → OpenAI chat-completion SSE 的桥接层。
+ *
+ * 负责把请求的 display 模型 id 解析成 upstream 的 `config_name`（及目录
+ * function），再把 Trae 的命名 SSE 事件翻译成 OpenAI 兼容的 `chat.completion.chunk`。
+ *
+ * @module trae-proxy/solo-bridge
+ */
+
 import { randomUUID } from 'node:crypto'
 import { SseDecoder, decodeTraeEvent } from './sse.ts'
 import type { TraeCatalog } from './catalog.ts'
@@ -73,7 +82,7 @@ export function bridgeTraeSoloStream(response: Response, model: string): Respons
             // a completed-but-empty response (EMPTY_RESPONSE).
             upstreamError = new Error(typeof payload?.['message'] === 'string' && payload['message'] !== ''
               ? payload['message']
-              : `Trae upstream error (code ${code ?? '?'})`)
+              : `Trae 上游错误（code ${code ?? '?'}）`)
           }
           return
         }
@@ -178,6 +187,8 @@ export class TraeSoloBridge implements TraeUpstreamClient {
     let prepared = bodyJson
     try {
       const input = JSON.parse(bodyJson) as Record<string, unknown>
+      // 原始请求里的 model，用于判断是否需要改写 prepared（避免二次解析 bodyJson）。
+      const originalModel = input['model']
       if (typeof input['model'] === 'string' && input['model'] !== '') model = input['model']
       // Resolve the display model id to the real llm_utils_chat config_name.
       // The Remote directory id may differ from the wire id (e.g. Seed-Code).
@@ -217,7 +228,7 @@ export class TraeSoloBridge implements TraeUpstreamClient {
       if (wireFunction !== undefined && input['function'] !== wireFunction) {
         input['function'] = wireFunction
       }
-      if (wireModel !== JSON.parse(bodyJson)['model'] || wireFunction !== undefined) {
+      if (wireModel !== originalModel || wireFunction !== undefined) {
         prepared = JSON.stringify(input)
       }
       if (typeof input['reasoning_effort'] === 'string') {

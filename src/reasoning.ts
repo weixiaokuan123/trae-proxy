@@ -1,3 +1,10 @@
+/**
+ * Trae reasoning effort 能力解析：从模型目录条目里读出可用的 effort 取值，
+ * 供上层把用户选择映射到 wire 取值。
+ *
+ * @module trae-proxy/reasoning
+ */
+
 export const TRAE_REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const
 export type TraeReasoningEffort = typeof TRAE_REASONING_EFFORTS[number]
 
@@ -18,17 +25,4 @@ export function parseReasoningCapability(value: unknown): TraeReasoningCapabilit
     : undefined
   if (supported.length === 0 && defaultEffort === undefined) return undefined
   return { supported, ...defaultEffort === undefined ? {} : { defaultEffort } }
-}
-
-/** Add effort only when the selected model advertises that exact value. */
-export function applyReasoningEffort<T extends Record<string, unknown>>(
-  body: T,
-  effort: TraeReasoningEffort | undefined,
-  capability: TraeReasoningCapability | undefined,
-): T & { reasoning_effort?: TraeReasoningEffort } {
-  if (effort === undefined) return body
-  if (capability === undefined || !capability.supported.includes(effort)) {
-    throw new Error(`Trae model does not advertise reasoning effort ${effort}`)
-  }
-  return { ...body, reasoning_effort: effort }
 }

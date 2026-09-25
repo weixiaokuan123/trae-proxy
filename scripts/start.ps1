@@ -55,6 +55,11 @@ if (All-PortsUp $Ports) {
   exit 0
 }
 
+# 启动前先收紧 keys/ 与 state/ 的 ACL（幂等，与端口就绪后那次配合）。
+# 这次负责纠正上一次运行或手工操作可能留下的宽松权限；
+# 目录若尚不存在则跳过，等 node 建出来后再由就绪后那次收紧。
+& (Join-Path $PSScriptRoot 'harden-acl.ps1')
+
 $serve = Join-Path $Root 'src\serve.ts'
 Rotate-Log $OutLog
 Rotate-Log $ErrLog
@@ -69,6 +74,9 @@ while ((Get-Date) -lt $deadline) {
 }
 
 if (All-PortsUp $Ports) {
+  # 节点启动可能新建了 keys/ 或 state/，此时它们才存在，补一次收紧。
+  & (Join-Path $PSScriptRoot 'harden-acl.ps1')
+
   $procId = Owner-PidOf $Ports[0]
   if ($procId -gt 0) { Set-Content -Path $PidFile -Value $procId -Encoding ASCII }
   Write-Host "trae-proxy started (PID $procId)"

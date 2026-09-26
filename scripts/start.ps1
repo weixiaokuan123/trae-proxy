@@ -63,9 +63,14 @@ if (All-PortsUp $Ports) {
 $serve = Join-Path $Root 'src\serve.ts'
 Rotate-Log $OutLog
 Rotate-Log $ErrLog
-$cmd = 'cmd /c node "' + $serve + '" >> "' + $OutLog + '" 2>> "' + $ErrLog + '"'
+# 让 node 直接持有日志文件：只有自己握住句柄才能在运行期轮转。
+# 此前由 cmd 重定向，句柄在 cmd 手里，进程内无法轮转，只能靠重启时轮一次，
+# 于是「长期不重启的进程」日志无上限增长。
+# 前台模式（-Foreground）不设这两个变量，日志照常打到控制台。
+$env:TRAE_PROXY_LOG_OUT = $OutLog
+$env:TRAE_PROXY_LOG_ERR = $ErrLog
 $sh = New-Object -ComObject WScript.Shell
-$sh.Run($cmd, 0, $false) | Out-Null
+$sh.Run('node "' + $serve + '"', 0, $false) | Out-Null
 
 $deadline = (Get-Date).AddSeconds(12)
 while ((Get-Date) -lt $deadline) {

@@ -8,6 +8,7 @@
  */
 
 import { randomBytes } from 'node:crypto'
+import { appendFileSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -60,33 +61,101 @@ function fmtLogArgs(args: unknown[]): string {
   return redactPaths(text)
 }
 
+/**
+ * 日志落盘 + 运行期轮转。
+ *
+ * 历史上日志由 start.ps1 用 cmd 重定向（node ... >> out.log 2>> err.log），
+ * 文件句柄在 cmd 手里 —— 本进程拿不到句柄，**无法在运行期轮转**，只能在重启时
+ * 轮一次。后果是「长期不重启的进程，日志无上限增长」。
+ *
+ * 因此改为：若环境变量指明了日志路径，由本进程直接持有该文件并在超限时自行轮转；
+ * 未设置（前台调试）时退回 stdout/stderr。
+ *
+ * 轮转策略与 start.ps1 里的 Rotate-Log 保持一致：超限改名为 .1，只保留一份。
+ */
+
+/** 单个日志文件上限，与 start.ps1 的 Rotate-Log 同一阈值。 */
+const LOG_MAX_BYTES = 5 * 1024 * 1024
+
+interface LogSink {
+  path: string
+  /** 当前文件已有字节数，作为轮转基线。 */
+  size: number
+}
+
+function makeLogSink(envKey: string): LogSink | null {
+  const p = process.env[envKey]
+  if (p === undefined || p.trim() === '') return null
+  try {
+    mkdirSync(dirname(p), { recursive: true })
+    // 追加而非截断：既有内容保留，并把当前大小作为轮转基线
+    return { path: p, size: statSync(p, { throwIfNoEntry: false })?.size ?? 0 }
+  } catch {
+    return null // 建不出来就退回 stdout/stderr，不让日志问题拦住启动
+  }
+}
+
+function writeLogSink(sink: LogSink, text: string): void {
+  const bytes = Buffer.byteLength(text)
+  if (sink.size + bytes > LOG_MAX_BYTES) {
+    try {
+      rmSync(`${sink.path}.1`, { force: true })
+      renameSync(sink.path, `${sink.path}.1`)
+      sink.size = 0
+    } catch {
+      // 轮转失败就继续往当前文件追加：丢日志比不轮转更糟
+    }
+  }
+  appendFileSync(sink.path, text, 'utf8')
+  sink.size += bytes
+}
+
+const LOG_OUT = makeLogSink('TRAE_PROXY_LOG_OUT')
+const LOG_ERR = makeLogSink('TRAE_PROXY_LOG_ERR')
+
+function writeLog(level: 'info' | 'warn' | 'error', line: string): void {
+  const sink = level === 'info' ? LOG_OUT : LOG_ERR
+  if (sink !== null) writeLogSink(sink, line)
+  else if (level === 'info') process.stdout.write(line)
+  else process.stderr.write(line)
+}
+
 /** 日志重复抑制窗口：同一 level + 同一文本在该窗口内只输出一次。 */
 const LOG_DEDUP_WINDOW_MS = 60_000
 let lastLogKey = ''
-let lastLogAtMs = 0
+/** 当前这段「相同日志连发」的起始时刻（不是上一条的时刻，见 shouldSuppressLog）。 */
+let runStartedAtMs = 0
 let suppressedLogCount = 0
 
 /**
  * 连续重复日志抑制。
  *
  * 上游反复故障时（例如某区域长期未登录），同一条错误会被每个 tick 重记一次，
- * 既刷屏又放大磁盘写入。这里对「同一 level + 同一文本」在窗口内只输出首次，
- * 并在下一条不同日志之前补发一行计数，保证信息不丢。
+ * 既刷屏又放大磁盘写入。这里对「同一 level + 同一文本」在窗口内只输出首次。
+ *
+ * 窗口从**这段连发的第一条**开始算。若像原先那样在每次抑制时把计时基准顺延到
+ * 当前时刻，窗口会被无限推迟 —— 同一条错误持续不断且期间没有别的日志时，
+ * 「同类日志已抑制 N 条」就永远刷不出来，事后也看不出到底发生过多少次。
+ * 现在窗口到期会先落盘计数、再让当前这条正常输出，保证每个窗口至少留一行可见。
  */
 function shouldSuppressLog(key: string): { suppress: boolean; flushNote: string | null } {
   const now = Date.now()
-  if (suppressedLogCount > 0 && (key !== lastLogKey || now - lastLogAtMs >= LOG_DEDUP_WINDOW_MS)) {
+  const sameKey = key === lastLogKey
+  const windowExpired = now - runStartedAtMs >= LOG_DEDUP_WINDOW_MS
+
+  if (suppressedLogCount > 0 && (!sameKey || windowExpired)) {
     const note = `（同类日志已抑制 ${suppressedLogCount} 条）`
     suppressedLogCount = 0
+    lastLogKey = key
+    runStartedAtMs = now
     return { suppress: false, flushNote: note }
   }
-  if (key === lastLogKey && now - lastLogAtMs < LOG_DEDUP_WINDOW_MS) {
+  if (sameKey && !windowExpired) {
     suppressedLogCount++
-    lastLogAtMs = now
     return { suppress: true, flushNote: null }
   }
   lastLogKey = key
-  lastLogAtMs = now
+  runStartedAtMs = now
   return { suppress: false, flushNote: null }
 }
 
@@ -94,10 +163,9 @@ function emitLog(level: 'info' | 'warn' | 'error', args: unknown[]): void {
   const text = fmtLogArgs(args)
   const { suppress, flushNote } = shouldSuppressLog(`${level}:${text}`)
   const at = ts()
-  const sink = level === 'info' ? process.stdout : process.stderr
-  if (flushNote !== null) sink.write(`[${at}] [${level}] ${flushNote}\n`)
+  if (flushNote !== null) writeLog(level, `[${at}] [${level}] ${flushNote}\n`)
   if (suppress) return
-  sink.write(`[${at}] [${level}] ${text}\n`)
+  writeLog(level, `[${at}] [${level}] ${text}\n`)
 }
 
 const logger: ShimLogger = {
@@ -105,6 +173,7 @@ const logger: ShimLogger = {
   warn: (...args) => emitLog('warn', args),
   error: (...args) => emitLog('error', args),
 }
+
 
 async function loadOrCreateKey(file: string): Promise<string> {
   try {

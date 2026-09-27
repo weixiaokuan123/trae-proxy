@@ -12,7 +12,7 @@
 import type { TraeCredential, TraeRefreshOutcome } from './auth.ts'
 import type { TraeEdition } from './paths.ts'
 import { hostname } from 'node:os'
-import { regionOfEdition, regionOfHost } from './region.ts'
+import { REGION_GATEWAYS, regionOfEdition, regionOfHost, type TraeRegion } from './region.ts'
 
 /**
  * Per-edition refresh contract (docs/INTL_SG_EVIDENCE.md §2.2).
@@ -45,6 +45,33 @@ export interface TraeRefreshDevice {
 }
 
 /**
+ * 判定某个主机名是不是本仓库认可、且属于哪个区域的 Trae 官方域名。
+ *
+ * 两个来源，缺一不可：
+ *
+ * 1. `REGION_GATEWAYS` 里**本仓库自己就会出网访问**的确切主机名。
+ *    这一条是为了覆盖 `trae-api-cn.mchost.guru`、`coresg-normal.trae.ai`
+ *    这类分片——它们是 `.mchost.guru` / 具体子域，只靠后缀规则会被误判，
+ *    而误判的代价是**国际版 token 刷新直接失败**（用户会突然用不了 Trae）。
+ *    既然这些域名本来就写在代码里、其它请求也照样往那儿发，把它们一并
+ *    列为可信，既堵住了「任意 host」又不误伤真实路径。
+ * 2. `regionOfHost` 的后缀规则（`*.trae.ai` / `*.trae.cn` / `*.trae.com.cn`）。
+ *
+ * 注意这里用的是**精确相等**而不是 `endsWith`：`evil-api.trae.cn.attacker.tld`
+ * 这种后缀 tricks 必须被拒。
+ */
+function trustedTraeRegion(hostname: string): TraeRegion | undefined {
+  for (const [region, gateways] of Object.entries(REGION_GATEWAYS)) {
+    for (const base of Object.values(gateways)) {
+      let h: string
+      try { h = new URL(base).hostname } catch { continue }
+      if (h === hostname) return region as TraeRegion
+    }
+  }
+  return regionOfHost(hostname)
+}
+
+/**
  * 归一化刷新 host，并**强制校验它确实是 Trae 官方域名**。
  *
  * 「请求挂在凭据自带的 host 上」这条设计在其他地方是优点（多区域共用一份代码），
@@ -60,8 +87,6 @@ export interface TraeRefreshDevice {
  *    而 edition 由「命中哪个候选文件」决定，与 host 无关 → 闸门照样通过。
  * 3. 其余三个仓库的上游 host 全是硬编码或白名单（workbuddy 的 `globalBase`、
  *    trae 的 `REGION_GATEWAYS`、minimax 的 `REGIONS`），只有这里例外。
- *
- * 校验复用 `regionOfHost` 已有的域名语义，不另造一套后缀表。
  */
 function normalizeHost(host: string, edition: TraeEdition): string {
   const value = host.trim()
@@ -75,8 +100,8 @@ function normalizeHost(host: string, edition: TraeEdition): string {
   }
   // 必须显式 https：明文 http 会把 refresh token 送到可被嗅探的链路上。
   if (url.protocol !== 'https:') throw new Error('Trae 刷新 host 必须是 https，已拒绝')
-  const region = regionOfHost(trimmed)
-  if (region === undefined) throw new Error('Trae 刷新 host 不是 Trae 官方域名，已拒绝')
+  const region = trustedTraeRegion(url.hostname)
+  if (region === undefined) throw new Error('Trae 刷新 host 不是已知的 Trae 官方域名，已拒绝')
   const expected = regionOfEdition(edition)
   if (region !== expected) {
     throw new Error(`Trae 刷新 host 区域与安装版本不符（${region} ≠ ${expected}），已拒绝`)

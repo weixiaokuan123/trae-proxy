@@ -12,6 +12,7 @@
 import type { TraeCredential, TraeRefreshOutcome } from './auth.ts'
 import type { TraeEdition } from './paths.ts'
 import { hostname } from 'node:os'
+import { regionOfEdition, regionOfHost } from './region.ts'
 
 /**
  * Per-edition refresh contract (docs/INTL_SG_EVIDENCE.md §2.2).
@@ -43,10 +44,44 @@ export interface TraeRefreshDevice {
   machineId: string
 }
 
-function normalizeHost(host: string): string {
+/**
+ * 归一化刷新 host，并**强制校验它确实是 Trae 官方域名**。
+ *
+ * 「请求挂在凭据自带的 host 上」这条设计在其他地方是优点（多区域共用一份代码），
+ * 但这里是全仓库**唯一一处带长期凭据出网、且 host 完全由数据驱动**的调用：
+ * body 里带 refresh token，而 host 来自桌面端 storage.json。
+ *
+ * 为什么必须校验（三个理由都是实测过的，不是理论风险）：
+ *
+ * 1. `decrypt.ts` 允许明文 JSON（`startsWith('{')` 分支跳过 AES 与完整性校验），
+ *    所以同用户写文件即可改写 host，不需要任何密钥。
+ * 2. 区域闸门拦不住：`regionOfHost` 对非法域名返回 undefined，
+ *    `regionOfCredential` 会一路回退到 `regionOfEdition(edition)`，
+ *    而 edition 由「命中哪个候选文件」决定，与 host 无关 → 闸门照样通过。
+ * 3. 其余三个仓库的上游 host 全是硬编码或白名单（workbuddy 的 `globalBase`、
+ *    trae 的 `REGION_GATEWAYS`、minimax 的 `REGIONS`），只有这里例外。
+ *
+ * 校验复用 `regionOfHost` 已有的域名语义，不另造一套后缀表。
+ */
+function normalizeHost(host: string, edition: TraeEdition): string {
   const value = host.trim()
   if (value === '') throw new Error('Trae 刷新 host 缺失')
-  return value.replace(/\/$/, '')
+  const trimmed = value.replace(/\/$/, '')
+  let url: URL
+  try {
+    url = new URL(trimmed)
+  } catch {
+    throw new Error('Trae 刷新 host 不是合法 URL，已拒绝')
+  }
+  // 必须显式 https：明文 http 会把 refresh token 送到可被嗅探的链路上。
+  if (url.protocol !== 'https:') throw new Error('Trae 刷新 host 必须是 https，已拒绝')
+  const region = regionOfHost(trimmed)
+  if (region === undefined) throw new Error('Trae 刷新 host 不是 Trae 官方域名，已拒绝')
+  const expected = regionOfEdition(edition)
+  if (region !== expected) {
+    throw new Error(`Trae 刷新 host 区域与安装版本不符（${region} ≠ ${expected}），已拒绝`)
+  }
+  return trimmed
 }
 
 /**
@@ -78,7 +113,7 @@ export async function refreshTraeCredential(
       DeviceName: hostname(),
     }
   }
-  const response = await fetch(`${normalizeHost(credential.host)}${contract.path}`, {
+  const response = await fetch(`${normalizeHost(credential.host, credential.edition)}${contract.path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

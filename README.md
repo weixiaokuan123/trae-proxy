@@ -14,6 +14,69 @@
 > （MIT，Copyright (c) 2026 LaoDing），去掉了 DeepSeek Harness（DSH）插件外壳，只保留纯 Node 连接内核。
 > 它**只读** Trae 桌面端当前登录态，本身不提供账号切换。
 
+## 导览
+
+> 这一节写给「懂技术、但没接触过这套东西」的人。读完这一节就能明白本项目在干什么。
+> 下面原有的技术文档一字未改。
+
+### 为什么需要它
+
+Trae / TRAE SOLO 桌面端只给你一个图形界面，**没有给命令行工具用的接口**；而且它的登录凭据是
+**加密**存在 `storage.json` 里的，通信用的是私有 SSE 协议。
+
+而 opencode 需要一个标准的 HTTP API 才能调用模型。
+
+本项目做中间那一层：**解密本地登录态 → 把私有协议桥接成标准 OpenAI `/v1/chat/completions` → 交给 opencode 用。**
+顺带把每天的签到积分领了。
+
+一句话：**让你已经付费登录的 Trae 账号，能在 opencode 里当 API 用。**
+
+它和另外两个平台代理（`workbuddy-proxy`、`minimax-proxy`）是并列关系，各自独立、互不依赖。
+三者的状态汇总在一个网页面板里（`agent-hub`）。
+
+### 你可能会关心的一件事
+
+**换账号不用重启代理。** 本项目每次请求都实时重读桌面端的登录态文件。
+所以你只要在 Trae 客户端里切到另一个号，下一次请求就自动跟着走了。
+
+（下文「切换账号」一节讲这个。）
+
+### 端口
+
+| 区域 | 地址 |
+| --- | --- |
+| 国内版（cn） | `http://127.0.0.1:39303/v1` |
+| 国际版（ai） | `http://127.0.0.1:39304/v1` |
+
+一个进程同时服务两个区域，各自用独立的 key 做本机鉴权。
+
+### 术语速查
+
+| 词 | 意思 |
+| --- | --- |
+| **回环 / loopback** | 只监听 `127.0.0.1`，只有本机能访问 |
+| **bearer key** | 首次启动随机生成的调用钥匙，防止本机其它程序误用你的账号 |
+| **SSE** | Server-Sent Events，一种「服务器持续往客户端推数据」的流式响应方式，对话时逐字返回就用它 |
+| **桥接** | 把一套私有协议翻译成标准协议，让普通客户端也能用 |
+| **幂等** | 同一操作做多次和做一次结果相同。签到已领就跳过 |
+| **SOLO 通道** | Trae SOLO 版走的一组接口，与普通 Trae 不同，本项目只使用已验证的这条 |
+
+### 最短上手路径
+
+```powershell
+git clone https://github.com/weixiaokuan123/trae-proxy.git "$env:USERPROFILE\.config\opencode\trae-proxy"
+cd "$env:USERPROFILE\.config\opencode\trae-proxy"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1   # 启动
+node .\scripts\inject-config.cjs                                          # 注入 provider
+```
+
+然后**重启 opencode**，在模型列表里选 `Trae 国内版` 或 `Trae 国际版` 下的模型。
+前提是本机已安装并登录 Trae / TRAE SOLO CN 桌面端。
+
+> 每天的签到积分**仅国内区**支持自动领取，国际区上游不提供。
+
+---
+
 ## 它做了什么
 
 Trae 桌面端把凭据加密存放在本地 `storage.json`，并使用私有的 SSE 事件协议。本代理：

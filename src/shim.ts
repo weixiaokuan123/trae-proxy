@@ -20,6 +20,7 @@ import { Readable } from 'node:stream'
 import type { LiveTraeStore } from './auth.ts'
 import type { TraeCatalog } from './catalog.ts'
 import { resolveTraeIdentity } from './identity.ts'
+import { aggregateSseToCompletion } from './nonstream.ts'
 import { traeStorageCandidates } from './paths.ts'
 import { regionOfEdition, type TraeRegion } from './region.ts'
 import type { TraeUpstreamClient, TraeUpstreamErrorKind } from './upstream.ts'
@@ -58,6 +59,14 @@ export interface TraeShimOptions {
 
 const BODY_LIMIT = 64 * 1024 * 1024
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
+/**
+ * 非流式响应的字节上限。
+ *
+ * 非流式本来就要把整段答案收进内存再聚合，不设上限的话一个超大输出就能把
+ * 代理的内存打满。2MB 约等于几十万 token 的纯文本，远超任何合理请求。
+ */
+const NONSTREAM_MAX_BYTES = 2 * 1024 * 1024
+
 const STATUS_BY_KIND: Readonly<Record<TraeUpstreamErrorKind, number>> = {
   authentication: 401,
   hard_credit: 402,
@@ -205,7 +214,9 @@ export function createTraeShim(options: TraeShimOptions): TraeShim {
           return writeError(res, 415, 'unsupported_media_type', 'Content-Type must be application/json')
         }
         const raw = (await readBody(req)).toString('utf8')
-        try { JSON.parse(raw) } catch { return writeError(res, 400, 'invalid_json', 'Request body must be valid JSON') }
+        let wantsJson: boolean
+        try { wantsJson = JSON.parse(raw).stream === false }
+        catch { return writeError(res, 400, 'invalid_json', 'Request body must be valid JSON') }
         const controller = new AbortController()
         const abort = (): void => controller.abort()
         // 监听器用完即摘：HTTP keep-alive 下 socket 会被复用，若每次请求都挂
@@ -227,13 +238,46 @@ export function createTraeShim(options: TraeShimOptions): TraeShim {
           cleanup()
           return writeError(res, STATUS_BY_KIND[result.kind], result.kind, result.message)
         }
+        const body = Readable.fromWeb(result.response.body as Parameters<typeof Readable.fromWeb>[0])
+        if (wantsJson) {
+          // 客户端明确要了 `"stream": false`。上游只发 SSE，所以这里收完再聚合成
+          // 一个 chat.completion，返回 application/json。
+          // 聚合不出东西时**不降级成流式**——那等于无视客户端的明确要求，
+          // 反而是更糟的错。宁可给 502。
+          const chunks: Buffer[] = []
+          let bytes = 0
+          let overflow = false
+          for await (const piece of body) {
+            bytes += (piece as Buffer).length
+            // 非流式本来就要把整段答案收进内存，设个上限免得被超大输出打爆。
+            // 2MB 约等于几十万 token 的纯文本，远超任何合理请求。
+            if (bytes > NONSTREAM_MAX_BYTES) { overflow = true; break }
+            chunks.push(piece as Buffer)
+          }
+          cleanup()
+          if (overflow) {
+            return writeError(res, 502, 'upstream_error',
+              `非流式响应超过 ${NONSTREAM_MAX_BYTES} 字节上限；请改用 stream: true`)
+          }
+          const completion = aggregateSseToCompletion(Buffer.concat(chunks).toString('utf8'))
+          if (completion === null) {
+            return writeError(res, 502, 'upstream_error', '上游响应无法聚合成非流式结果')
+          }
+          const out = JSON.stringify(completion)
+          res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Content-Length': Buffer.byteLength(out),
+            'Cache-Control': 'no-store',
+          })
+          res.end(out)
+          return
+        }
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           'Connection': 'keep-alive',
           'X-Accel-Buffering': 'no',
         })
-        const body = Readable.fromWeb(result.response.body as Parameters<typeof Readable.fromWeb>[0])
         body.on('error', (error: unknown) => {
           options.logger?.warn(`trae(${region}): 上游流失效`, error)
           if (!res.writableEnded) res.end()

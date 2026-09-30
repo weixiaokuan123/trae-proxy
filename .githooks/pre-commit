@@ -1,0 +1,24 @@
+#!/bin/sh
+# 隐私拦截钩子 · 仓内跳板
+#
+# 本文件由四仓共享，请勿单独修改某一仓的副本——
+# 源文件在 C:/Users/DanSofar/.config/opencode/.githooks/.bootstrap.sh，
+# 改完运行 install-hooks.ps1 -All 同步到各仓。
+#
+# 作用：core.hooksPath 指向本仓 .githooks 目录（路径永远有效），
+# 再由本脚本转发到共享实现。共享目录丢失时明确报错，
+# 避免 git 因「钩子目录不存在」而静默跳过防线。
+
+set -e
+
+SHARED='C:/Users/DanSofar/.config/opencode/.githooks'
+
+if [ ! -f "$SHARED/pii-scan.js" ]; then
+  printf '\n\033[31m✗ 隐私拦截钩子找不到共享目录，已阻止提交\033[0m\n' >&2
+  printf '  期望位置：%s\n' "$SHARED" >&2
+  printf '  git 对「钩子目录不存在」是静默跳过的，所以这里必须主动报错。\n' >&2
+  printf '  修复：powershell -NoProfile -ExecutionPolicy Bypass -File "%s/install-hooks.ps1" -All\n\n' "$SHARED" >&2
+  exit 1
+fi
+
+exec sh "$SHARED/pre-commit" "$@"
